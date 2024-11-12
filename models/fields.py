@@ -4,118 +4,34 @@ import torch.nn.functional as F
 import numpy as np
 from models.embedder import get_embedder
 
-
-# This implementation is borrowed from IDR: https://github.com/lioryariv/idr
-# class SDFNetwork(nn.Module):
-#     def __init__(self,
-#                  d_in,
-#                  d_out,
-#                  d_hidden,
-#                  n_layers,
-#                  skip_in=(4,),
-#                  multires=0,
-#                  bias=0.5,
-#                  scale=1,
-#                  geometric_init=True,
-#                  weight_norm=True,
-#                  inside_outside=False):
-#         super(SDFNetwork, self).__init__()
-
-#         dims = [d_in] + [d_hidden for _ in range(n_layers)] + [d_out]
-
-#         self.embed_fn_fine = None
-
-#         if multires > 0:
-#             embed_fn, input_ch = get_embedder(multires, input_dims=d_in)
-#             self.embed_fn_fine = embed_fn
-#             dims[0] = input_ch
-
-#         self.num_layers = len(dims)
-#         self.skip_in = skip_in
-#         self.scale = scale
-
-#         for l in range(0, self.num_layers - 1):
-#             if l + 1 in self.skip_in:
-#                 out_dim = dims[l + 1] - dims[0]
-#             else:
-#                 out_dim = dims[l + 1]
-
-#             lin = nn.Linear(dims[l], out_dim)
-
-#             if geometric_init:
-#                 if l == self.num_layers - 2:
-#                     if not inside_outside:
-#                         torch.nn.init.normal_(lin.weight, mean=np.sqrt(np.pi) / np.sqrt(dims[l]), std=0.0001)
-#                         torch.nn.init.constant_(lin.bias, -bias)
-#                     else:
-#                         torch.nn.init.normal_(lin.weight, mean=-np.sqrt(np.pi) / np.sqrt(dims[l]), std=0.0001)
-#                         torch.nn.init.constant_(lin.bias, bias)
-#                 elif multires > 0 and l == 0:
-#                     torch.nn.init.constant_(lin.bias, 0.0)
-#                     torch.nn.init.constant_(lin.weight[:, 3:], 0.0)
-#                     torch.nn.init.normal_(lin.weight[:, :3], 0.0, np.sqrt(2) / np.sqrt(out_dim))
-#                 elif multires > 0 and l in self.skip_in:
-#                     torch.nn.init.constant_(lin.bias, 0.0)
-#                     torch.nn.init.normal_(lin.weight, 0.0, np.sqrt(2) / np.sqrt(out_dim))
-#                     torch.nn.init.constant_(lin.weight[:, -(dims[0] - 3):], 0.0)
-#                 else:
-#                     torch.nn.init.constant_(lin.bias, 0.0)
-#                     torch.nn.init.normal_(lin.weight, 0.0, np.sqrt(2) / np.sqrt(out_dim))
-
-#             if weight_norm:
-#                 lin = nn.utils.weight_norm(lin)
-
-#             setattr(self, "lin" + str(l), lin)
-
-#         self.activation = nn.Softplus(beta=100)
-
-#     def forward(self, inputs):
-#         inputs = inputs * self.scale
-#         if self.embed_fn_fine is not None:
-#             inputs = self.embed_fn_fine(inputs)
-
-#         x = inputs
-#         for l in range(0, self.num_layers - 1):
-#             lin = getattr(self, "lin" + str(l))
-
-#             if l in self.skip_in:
-#                 x = torch.cat([x, inputs], 1) / np.sqrt(2)
-
-#             x = lin(x)
-
-#             if l < self.num_layers - 2:
-#                 x = self.activation(x)
-#         return torch.cat([x[:, :1] / self.scale, x[:, 1:]], dim=-1)
-
-#     def sdf(self, x):
-#         return self.forward(x)[:, :1]
-
-#     def sdf_hidden_appearance(self, x):
-#         return self.forward(x)
-
-#     def gradient(self, x):
-#         x.requires_grad_(True)
-#         y = self.sdf(x)
-#         d_output = torch.ones_like(y, requires_grad=False, device=y.device)
-#         gradients = torch.autograd.grad(
-#             outputs=y,
-#             inputs=x,
-#             grad_outputs=d_output,
-#             create_graph=True,
-#             retain_graph=True,
-#             only_inputs=True)[0]
-#         return gradients.unsqueeze(1)
-
 class SDFNetwork(nn.Module):
-    def __init__(self, bound_min, bound_max, resolution, scale=1.5):
+    def __init__(self, bound_min, bound_max, resolution, scale=1.5, sdfnet_width=128, sdfnet_depth=3, rgbnet_width=128, rgbnet_depth=3):
         super(SDFNetwork, self).__init__()
-
-        self.voxel_grid = nn.Parameter(torch.ones((1, 27 + 1, resolution, resolution, resolution)) / 100)
+        self.grid = torch.ones((1, 1 + 128, resolution, resolution, resolution))
+        self.voxel_grid = nn.Parameter(self.grid)
         self.scale = scale
         self.resolution = resolution
 
+        self.sdfnet = nn.Sequential(
+            nn.Linear(128 + 10*6 + 3, sdfnet_width), nn.ReLU(inplace=True),
+            *[
+                nn.Sequential(nn.Linear(sdfnet_width, sdfnet_width), nn.ReLU(inplace=True))
+                for _ in range(sdfnet_depth-2)
+            ],
+            nn.Linear(sdfnet_width, 4),
+        )
+
+        self.rgbnet = nn.Sequential(
+            nn.Linear(128 + 10*6 + 3 + 4*6 + 3 + 3, rgbnet_width), nn.ReLU(inplace=True),
+            *[
+                nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.ReLU(inplace=True))
+                for _ in range(rgbnet_depth-2)
+            ],
+            nn.Linear(rgbnet_width, 3),
+        )
+
     def forward(self, x):
-        output = torch.zeros((x.shape[0], 28), device=x.device)
+        output = torch.zeros((x.shape[0], self.grid.shape[1]), device=x.device)
         mask = (x[:, 0].abs() < self.scale) & (x[:, 1].abs() < self.scale) & (x[:, 2].abs() < self.scale)
 
         idx = (x[mask]/self.scale).clip(-1, 1)
@@ -126,20 +42,12 @@ class SDFNetwork(nn.Module):
         return output
 
     def sdf(self, x):
-        return self.forward(x)[:, :1]
-
-    def color(self, x, d):
-        c = self.eval_spherical_function(self.forward(x)[:, 1:].reshape(-1, 3, 9), d)
-        return c
-
-    def eval_spherical_function(self, k, d):
-        x, y, z = d[..., 0:1], d[..., 1:2], d[..., 2:3]
-
-        # Modified from https://github.com/google/spherical-harmonics/blob/master/sh/spherical_harmonics.cc
-        return 0.282095 * k[..., 0] + \
-            - 0.488603 * y * k[..., 1] + 0.488603 * z * k[..., 2] - 0.488603 * x * k[..., 3] + \
-            (1.092548 * x * y * k[..., 4] - 1.092548 * y * z * k[..., 5] + 0.315392 * (2.0 * z * z - x * x - y * y) * k[
-                ..., 6] + -1.092548 * x * z * k[..., 7] + 0.546274 * (x * x - y * y) * k[..., 8])
+        emb_x = self.positional_encoding(x, 10)
+        feats = self.forward(x)
+        sdf_color_feat = feats[:, 1:]
+        output = self.sdfnet(torch.cat([sdf_color_feat, emb_x], dim = 1))
+        sdf = output[:, :1]
+        return sdf
 
     def lerp(self, u, a, b):
         return a + u * (b - a)
@@ -165,7 +73,7 @@ class SDFNetwork(nn.Module):
         # Normal vector (negative gradient of the SDF)
         normals = torch.hstack((df_dx, df_dy, df_dz))
         
-        return normals
+        return normals.detach()
 
     def get_aabb_cube(self, x):
         abs_x = (x / (2 * self.scale / self.resolution) + self.resolution / 2)
@@ -194,103 +102,72 @@ class SDFNetwork(nn.Module):
         s_111 = self.voxel_grid[0, :1, idx_111[:, 0], idx_111[:, 1], idx_111[:, 2]].permute([1, 0])
 
         return s_000, s_001, s_010, s_100, s_101, s_011, s_110, s_111
+        return x[~mask, :], d[~mask, :], s000[~mask], s001[~mask], s010[~mask], s100[~mask], s101[~mask], s011[~mask], s110[~mask], s111[~mask]
 
-    def get_polynomial_coeff(self, s_000, s_001, s_010, s_100, s_101, s_011, s_110, s_111):
+    def get_polynomial_coeff(self, o, d, s_000, s_001, s_010, s_100, s_101, s_011, s_110, s_111):
+        ox, oy, oz = o[:, :1], o[:, 1:2], o[:, 2:]
+        dx, dy, dz = d[:, :1], d[:, 1:2], d[:, 2:]
+        a = s_101 - s_001
+        k0 = s_000
+        k1 = s_100 - s_000
+        k2 = s_010 - s_000
+        k3 = s_110 - s_010 - k1
+        k4 = k0 - s_001
+        k5 = k1 - a
+        k6 = k2 - (s_011 - s_001)
+        k7 = k3 - (s_111 - s_011 - a)
 
-    def get_root(c3, c2, c1, c0):
-        return mask, t_star
+        m0 = ox * oy
+        m1 = dx * dy
+        m2 = ox * dy + oy * dx
+        m3 = k5 * oz - k1
+        m4 = k6 * oz - k2
+        m5 = k7 * oz - k3
 
-    def gradient(self, x):
-        abs_x, rel_x, idx_000, idx_001, idx_010, idx_100, idx_101, idx_011, idx_110, idx_111 = \
-            self.get_aabb_cube(x)
+        c0 = (k4 * oz - k0) + ox * m3 + oy * m4 + m0 * m5
+        c1 = (dx * m3 + dy * m4 + m2 * m5 + dz * (k4 + k5 * ox + k6 * oy + k7 * m0))
+        c2 = m1 * m5 + dz * (k5 * dx + k6 * dy + k7 * m2)
+        c3 = k7 * m1 * dz
 
-        s_000, s_001, s_010, s_100, s_101, s_011, s_110, s_111 = \
-            self.get_aabb_sdf(idx_000, idx_001, idx_010, idx_100, idx_101, idx_011, idx_110, idx_111)
+        # return c3.squeeze(1), c2.squeeze(1), c1.squeeze(1), c0.squeeze(1)
+        return c3.squeeze(1).detach(), c2.squeeze(1).detach(), c1.squeeze(1).detach(), c0.squeeze(1).detach()
 
-        gradient = \
-            self.compute_sdf_normal(rel_x, s_000, s_001, s_010, s_100, s_101, s_011, s_110, s_111)
+    @staticmethod
+    def positional_encoding(x, L):
+        out = [x]
+        for j in range(L):
+            out.append(torch.sin(2 ** j * x))
+            out.append(torch.cos(2 ** j * x))
+        return torch.cat(out, dim=1)
 
-        c3, c2, c1, c0 = \
-            self.get_polynomial_coeff(s_000, s_001, s_010, s_100, s_101, s_011, s_110, s_111)
+    def gradient_sdf_color(self, x, d):
+        emb_x = self.positional_encoding(x, 10)
+        emb_d = self.positional_encoding(d, 4)
+        feats = self.forward(x)
+        sdf_inter = feats[:, :1]
+        sdf_color_feat = feats[:, 1:]
 
-        mask, t_star = \
-            self.get_root(c3, c2, c1, c0)
+        # abs_x, rel_x, *idxs = self.get_aabb_cube(x)
+        # s_idx = self.get_aabb_sdf(*idxs)
+        # gradients = self.compute_sdf_normal(rel_x, *s_idx)
 
-        mask_change, average = \
-            self.get_sdf_change_dir(x, abs_x, rel_x, t_star, d)
+        output = self.sdfnet(torch.cat([sdf_color_feat, emb_x], dim = 1))
+        sdf, gradients = output[:, :1], torch.tanh(output[:, 1:])
 
-        normal = \
-            self.compute_sdf_normal(t_star, s_000, s_001, s_010, s_100, s_101, s_011, s_110, s_111)
+        # x.requires_grad_(True)
+        # y = self.sdf(x)
+        # d_output = torch.ones_like(y, requires_grad=False, device=y.device)
+        # gradients = torch.autograd.grad(
+        #     outputs=y,
+        #     inputs=x,
+        #     grad_outputs=d_output,
+        #     create_graph=True,
+        #     retain_graph=True,
+        #     only_inputs=True)[0]
 
-        real_sdf = \
-            self.compute_real_sdf(t_star, mask_change, normal)
-        
-        return gradient, real_sdf
+        color = torch.sigmoid(self.rgbnet(torch.cat([sdf_color_feat, emb_x, emb_d, gradients], dim=1)))
 
-
-# This implementation is borrowed from IDR: https://github.com/lioryariv/idr
-class RenderingNetwork(nn.Module):
-    def __init__(self,
-                 d_feature,
-                 mode,
-                 d_in,
-                 d_out,
-                 d_hidden,
-                 n_layers,
-                 weight_norm=True,
-                 multires_view=0,
-                 squeeze_out=True):
-        super().__init__()
-
-        self.mode = mode
-        self.squeeze_out = squeeze_out
-        dims = [d_in + d_feature] + [d_hidden for _ in range(n_layers)] + [d_out]
-
-        self.embedview_fn = None
-        if multires_view > 0:
-            embedview_fn, input_ch = get_embedder(multires_view)
-            self.embedview_fn = embedview_fn
-            dims[0] += (input_ch - 3)
-
-        self.num_layers = len(dims)
-
-        for l in range(0, self.num_layers - 1):
-            out_dim = dims[l + 1]
-            lin = nn.Linear(dims[l], out_dim)
-
-            if weight_norm:
-                lin = nn.utils.weight_norm(lin)
-
-            setattr(self, "lin" + str(l), lin)
-
-        self.relu = nn.ReLU()
-
-    def forward(self, points, normals, view_dirs, feature_vectors):
-        if self.embedview_fn is not None:
-            view_dirs = self.embedview_fn(view_dirs)
-
-        rendering_input = None
-
-        if self.mode == 'idr':
-            rendering_input = torch.cat([points, view_dirs, normals, feature_vectors], dim=-1)
-        elif self.mode == 'no_view_dir':
-            rendering_input = torch.cat([points, normals, feature_vectors], dim=-1)
-        elif self.mode == 'no_normal':
-            rendering_input = torch.cat([points, view_dirs, feature_vectors], dim=-1)
-
-        x = rendering_input
-
-        for l in range(0, self.num_layers - 1):
-            lin = getattr(self, "lin" + str(l))
-
-            x = lin(x)
-
-            if l < self.num_layers - 2:
-                x = self.relu(x)
-
-        if self.squeeze_out:
-            x = torch.sigmoid(x)
-        return x
+        return gradients, sdf, color
 
 
 # This implementation is borrowed from nerf-pytorch: https://github.com/yenchenlin/nerf-pytorch

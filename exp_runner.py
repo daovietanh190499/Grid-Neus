@@ -65,18 +65,15 @@ class Runner:
         self.nerf_outside = NeRF(**self.conf['model.nerf']).to(self.device)
         self.sdf_network = SDFNetwork(bound_min=bound_min, bound_max=bound_max, **self.conf['model.sdf_network']).to(self.device)
         self.deviation_network = SingleVarianceNetwork(**self.conf['model.variance_network']).to(self.device)
-        self.color_network = RenderingNetwork(**self.conf['model.rendering_network']).to(self.device)
         params_to_train += list(self.nerf_outside.parameters())
         params_to_train += list(self.sdf_network.parameters())
         params_to_train += list(self.deviation_network.parameters())
-        params_to_train += list(self.color_network.parameters())
 
         self.optimizer = torch.optim.Adam(params_to_train, lr=self.learning_rate)
 
         self.renderer = NeuSRenderer(self.nerf_outside,
                                      self.sdf_network,
                                      self.deviation_network,
-                                     self.color_network,
                                      **self.conf['model.neus_renderer'])
 
         # Load checkpoint
@@ -140,12 +137,12 @@ class Runner:
 
             mask_loss = F.binary_cross_entropy(weight_sum.clip(1e-3, 1.0 - 1e-3), mask)
 
-            # loss = color_fine_loss +\
-            #        eikonal_loss * self.igr_weight +\
-            #        mask_loss * self.mask_weight
-
             loss = color_fine_loss +\
+                   eikonal_loss * self.igr_weight +\
                    mask_loss * self.mask_weight
+
+            # loss = color_fine_loss +\
+            #        mask_loss * self.mask_weight
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -217,7 +214,6 @@ class Runner:
         self.nerf_outside.load_state_dict(checkpoint['nerf'])
         self.sdf_network.load_state_dict(checkpoint['sdf_network_fine'])
         self.deviation_network.load_state_dict(checkpoint['variance_network_fine'])
-        self.color_network.load_state_dict(checkpoint['color_network_fine'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.iter_step = checkpoint['iter_step']
 
@@ -228,7 +224,6 @@ class Runner:
             'nerf': self.nerf_outside.state_dict(),
             'sdf_network_fine': self.sdf_network.state_dict(),
             'variance_network_fine': self.deviation_network.state_dict(),
-            'color_network_fine': self.color_network.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'iter_step': self.iter_step,
         }

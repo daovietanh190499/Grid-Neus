@@ -74,7 +74,6 @@ class NeuSRenderer:
                  nerf,
                  sdf_network,
                  deviation_network,
-                 color_network,
                  n_samples,
                  n_importance,
                  n_outside,
@@ -83,7 +82,6 @@ class NeuSRenderer:
         self.nerf = nerf
         self.sdf_network = sdf_network
         self.deviation_network = deviation_network
-        self.color_network = color_network
         self.n_samples = n_samples
         self.n_importance = n_importance
         self.n_outside = n_outside
@@ -198,7 +196,6 @@ class NeuSRenderer:
                     sample_dist,
                     sdf_network,
                     deviation_network,
-                    color_network,
                     background_alpha=None,
                     background_sampled_color=None,
                     background_rgb=None,
@@ -217,13 +214,8 @@ class NeuSRenderer:
         pts = pts.reshape(-1, 3)
         dirs = dirs.reshape(-1, 3)
 
-        sdf_nn_output = sdf_network(pts)
-        sdf = sdf_nn_output[:, :1]
-        feature_vector = sdf_nn_output[:, 1:]
-
-        gradients = sdf_network.gradient(pts).squeeze()
-        # sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
-        sampled_color = sdf_network.color(pts, dirs).reshape(batch_size, n_samples, 3)
+        gradients, sdf, sampled_color = sdf_network.gradient_sdf_color(pts, dirs)
+        sampled_color = sampled_color.reshape(batch_size, n_samples, 3)
 
         inv_s = deviation_network(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6)           # Single parameter
         inv_s = inv_s.expand(batch_size * n_samples, 1)
@@ -354,7 +346,6 @@ class NeuSRenderer:
                                     sample_dist,
                                     self.sdf_network,
                                     self.deviation_network,
-                                    self.color_network,
                                     background_rgb=background_rgb,
                                     background_alpha=background_alpha,
                                     background_sampled_color=background_sampled_color,
