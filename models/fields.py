@@ -7,7 +7,7 @@ from models.embedder import get_embedder
 class SDFNetwork(nn.Module):
     def __init__(self, bound_min, bound_max, resolution, scale=1.5, sdfnet_width=128, sdfnet_depth=3, rgbnet_width=128, rgbnet_depth=3):
         super(SDFNetwork, self).__init__()
-        self.grid = torch.ones((1, 1 + 128, resolution, resolution, resolution))
+        self.grid = torch.ones((1, 1 + 128, resolution, resolution, resolution))*0.3
         self.voxel_grid = nn.Parameter(self.grid)
         self.scale = scale
         self.resolution = resolution

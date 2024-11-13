@@ -13,7 +13,7 @@ from icecream import ic
 from tqdm import tqdm
 from pyhocon import ConfigFactory
 from models.dataset import Dataset
-from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF
+from models.fields import SDFNetwork, SingleVarianceNetwork, NeRF
 from models.renderer import NeuSRenderer
 
 
