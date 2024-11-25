@@ -170,6 +170,9 @@ class Runner:
 
             if self.iter_step % self.val_mesh_freq == 0:
                 self.validate_mesh()
+            
+            if self.iter_step == 1:
+                self.validate_mesh()
 
             self.update_learning_rate()
 

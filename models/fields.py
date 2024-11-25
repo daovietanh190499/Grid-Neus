@@ -5,21 +5,65 @@ import numpy as np
 from models.embedder import get_embedder
 
 class SDFNetwork(nn.Module):
-    def __init__(self, bound_min, bound_max, resolution, scale=1.5, sdfnet_width=128, sdfnet_depth=3, rgbnet_width=128, rgbnet_depth=3):
+    def __init__(
+        self, 
+        bound_min, 
+        bound_max, 
+        resolution, 
+        scale=1.5, 
+        sdfnet_width=128, 
+        sdfnet_depth=3, 
+        rgbnet_width=128, 
+        rgbnet_depth=3,
+        bias=0.5,
+        geometric_init=True
+    ):
         super(SDFNetwork, self).__init__()
-        self.grid = torch.ones((1, 1 + 128, resolution, resolution, resolution))*0.3
+
+        if geometric_init:
+            linear = nn.Linear(3, 128)
+            nn.init.constant_(linear.bias, 0.0)
+            nn.init.normal_(linear.weight, 0.0, np.sqrt(2) / np.sqrt(128))
+            linear.requires_grad_(False)
+            for param in linear.parameters():
+                param.requires_grad = False
+            self.grid = self.create_coordinate_grid(resolution)
+            self.grid = linear(self.grid.permute(1, 2, 3, 0).reshape((resolution**3, 3)))
+            self.grid = self.grid.reshape((resolution, resolution, resolution, 128)).permute(3, 0, 1, 2)
+            self.grid = self.grid.unsqueeze(0).detach()
+        else:
+            self.grid = torch.ones((1, 128, resolution, resolution, resolution))*0.3            
+
         self.voxel_grid = nn.Parameter(self.grid)
         self.scale = scale
         self.resolution = resolution
 
-        self.sdfnet = nn.Sequential(
-            nn.Linear(128 + 10*6 + 3, sdfnet_width), nn.ReLU(inplace=True),
-            *[
-                nn.Sequential(nn.Linear(sdfnet_width, sdfnet_width), nn.ReLU(inplace=True))
-                for _ in range(sdfnet_depth-2)
-            ],
-            nn.Linear(sdfnet_width, 4),
-        )
+        sdfnet_layers = []
+        dims = [128 + 10*6 + 3, 128] + [sdfnet_width for _ in range(sdfnet_depth-2)] + [4]
+
+        for l in range(len(dims) - 1):
+            lin = nn.Linear(dims[l], dims[l+1])
+            
+            if geometric_init:
+                if l == len(dims) - 2:
+                    torch.nn.init.normal_(lin.weight, mean=np.sqrt(np.pi) / np.sqrt(dims[l]), std=0.0001)
+                    torch.nn.init.constant_(lin.bias, -bias)
+                elif l == 0:
+                    torch.nn.init.constant_(lin.bias, 0.0)
+                    torch.nn.init.normal_(lin.weight, 0.0, np.sqrt(2) / np.sqrt(dims[l+1]))
+                    torch.nn.init.constant_(lin.weight[:, -(10*6):], 0.0)
+                else:
+                    torch.nn.init.constant_(lin.bias, 0.0)
+                    torch.nn.init.normal_(lin.weight, 0.0, np.sqrt(2) / np.sqrt(dims[l+1]))
+
+            if l == len(dims) - 2:
+                sdfnet_layers.append(lin)
+            else:
+                sdfnet_layers.append(nn.Sequential(lin, nn.ReLU(inplace=True)))
+        
+        self.sdfnet = nn.Sequential(*sdfnet_layers)
+
+        print(self.sdfnet)
 
         self.rgbnet = nn.Sequential(
             nn.Linear(128 + 10*6 + 3 + 4*6 + 3 + 3, rgbnet_width), nn.ReLU(inplace=True),
@@ -29,6 +73,12 @@ class SDFNetwork(nn.Module):
             ],
             nn.Linear(rgbnet_width, 3),
         )
+
+    def create_coordinate_grid(self, N):
+        coords = torch.linspace(-1, 1, N)
+        x, y, z = torch.meshgrid(coords, coords, coords, indexing='ij')
+        grid = torch.stack([x, y, z], dim=0)
+        return grid
 
     def forward(self, x):
         output = torch.zeros((x.shape[0], self.grid.shape[1]), device=x.device)
@@ -44,8 +94,7 @@ class SDFNetwork(nn.Module):
     def sdf(self, x):
         emb_x = self.positional_encoding(x, 10)
         feats = self.forward(x)
-        sdf_color_feat = feats[:, 1:]
-        output = self.sdfnet(torch.cat([sdf_color_feat, emb_x], dim = 1))
+        output = self.sdfnet(torch.cat([feats, emb_x], dim = 1))
         sdf = output[:, :1]
         return sdf
 
@@ -61,13 +110,11 @@ class SDFNetwork(nn.Module):
         emb_x = self.positional_encoding(x, 10)
         emb_d = self.positional_encoding(d, 4)
         feats = self.forward(x)
-        sdf_inter = feats[:, :1]
-        sdf_color_feat = feats[:, 1:]
 
-        output = self.sdfnet(torch.cat([sdf_color_feat, emb_x], dim = 1))
+        output = self.sdfnet(torch.cat([torch.relu(feats), emb_x], dim = 1))
         sdf, gradients = output[:, :1], torch.tanh(output[:, 1:])
 
-        color = torch.sigmoid(self.rgbnet(torch.cat([sdf_color_feat, emb_x, emb_d, gradients], dim=1)))
+        color = torch.sigmoid(self.rgbnet(torch.cat([feats, emb_x, emb_d, gradients], dim=1)))
 
         return gradients, sdf, color
 

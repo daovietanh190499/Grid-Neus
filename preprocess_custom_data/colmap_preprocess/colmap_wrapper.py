@@ -32,6 +32,7 @@ def run_colmap(basedir, match_type):
             '--ImageReader.single_camera', '1',
             # '--SiftExtraction.use_gpu', '0',
     ]
+    print("xvfb-run -s '-screen 0 1024x768x24' " + " ".join(feature_extractor_args))
     feat_output = ( subprocess.check_output(feature_extractor_args, universal_newlines=True) )
     logfile.write(feat_output)
     print('Features extracted')
