@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from models.embedder import get_embedder
+import models.gridsample_grad2.cuda_gridsample as grid_sample
 
 class SDFNetwork(nn.Module):
     def __init__(
@@ -39,7 +40,7 @@ class SDFNetwork(nn.Module):
         self.resolution = resolution
 
         sdfnet_layers = []
-        dims = [128 + 10*6 + 3, 128] + [sdfnet_width for _ in range(sdfnet_depth-2)] + [4]
+        dims = [128 + 10*6 + 3, 128] + [sdfnet_width for _ in range(sdfnet_depth-2)] + [1]
 
         for l in range(len(dims) - 1):
             lin = nn.Linear(dims[l], dims[l+1])
@@ -59,7 +60,7 @@ class SDFNetwork(nn.Module):
             if l == len(dims) - 2:
                 sdfnet_layers.append(lin)
             else:
-                sdfnet_layers.append(nn.Sequential(lin, nn.ReLU(inplace=True)))
+                sdfnet_layers.append(nn.Sequential(lin, nn.Softplus(beta=100)))
         
         self.sdfnet = nn.Sequential(*sdfnet_layers)
 
@@ -86,7 +87,8 @@ class SDFNetwork(nn.Module):
 
         idx = (x[mask]/self.scale).clip(-1, 1)
 
-        tmp = nn.functional.grid_sample(self.voxel_grid, idx.view(1, 1, 1, -1, 3), mode='bilinear', align_corners=True)
+        tmp = grid_sample.grid_sample_3d(self.voxel_grid, idx.view(1, 1, 1, -1, 3), align_corners=True)
+        # tmp = nn.functional.grid_sample(self.voxel_grid, idx.view(1, 1, 1, -1, 3), mode='bilinear', align_corners=True)
         tmp = tmp.permute([0, 2, 3, 4, 1]).squeeze(0).squeeze(0).squeeze(0)
         output[mask] = tmp
         return output
@@ -94,8 +96,8 @@ class SDFNetwork(nn.Module):
     def sdf(self, x):
         emb_x = self.positional_encoding(x, 10)
         feats = self.forward(x)
-        output = self.sdfnet(torch.cat([feats, emb_x], dim = 1))
-        sdf = output[:, :1]
+        output = self.sdfnet(torch.cat([nn.Softplus(beta=100)(feats), emb_x], dim = 1))
+        sdf = output
         return sdf
 
     @staticmethod
@@ -107,12 +109,22 @@ class SDFNetwork(nn.Module):
         return torch.cat(out, dim=1)
 
     def gradient_sdf_color(self, x, d):
+        x.requires_grad_(True)
         emb_x = self.positional_encoding(x, 10)
         emb_d = self.positional_encoding(d, 4)
         feats = self.forward(x)
 
-        output = self.sdfnet(torch.cat([torch.relu(feats), emb_x], dim = 1))
-        sdf, gradients = output[:, :1], torch.tanh(output[:, 1:])
+        sdf = self.sdfnet(torch.cat([nn.Softplus(beta=100)(feats), emb_x], dim = 1))
+
+        y = sdf
+        d_output = torch.ones_like(y, requires_grad=False, device=y.device)
+        gradients = torch.autograd.grad(
+            outputs=y,
+            inputs=x,
+            grad_outputs=d_output,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True)[0]
 
         color = torch.sigmoid(self.rgbnet(torch.cat([feats, emb_x, emb_d, gradients], dim=1)))
 
