@@ -28,14 +28,15 @@ class SDFNetwork(nn.Module):
             linear.requires_grad_(False)
             for param in linear.parameters():
                 param.requires_grad = False
-            self.grid = self.create_coordinate_grid(resolution)
-            self.grid = linear(self.grid.permute(1, 2, 3, 0).reshape((resolution**3, 3)))
-            self.grid = self.grid.reshape((resolution, resolution, resolution, 128)).permute(3, 0, 1, 2)
-            self.grid = self.grid.unsqueeze(0).detach()
-        else:
-            self.grid = torch.ones((1, 128, resolution, resolution, resolution))*0.3            
 
-        self.voxel_grid = nn.Parameter(self.grid)
+            grid = self.create_coordinate_grid(resolution)
+            grid = linear(grid.permute(1, 2, 3, 0).reshape((resolution**3, 3)))
+            grid = grid.reshape((resolution, resolution, resolution, 128)).permute(3, 0, 1, 2)
+            self.register_buffer("grid", grid.unsqueeze(0))  # Store as a non-trainable buffer
+        else:
+            self.register_buffer("grid", torch.ones((1, 128, resolution, resolution, resolution)) * 0.3)
+
+        self.voxel_grid = nn.Parameter(self.grid.clone())
         self.scale = scale
         self.resolution = resolution
 
@@ -63,8 +64,6 @@ class SDFNetwork(nn.Module):
                 sdfnet_layers.append(nn.Sequential(lin, nn.Softplus(beta=100)))
         
         self.sdfnet = nn.Sequential(*sdfnet_layers)
-
-        print(self.sdfnet)
 
         self.rgbnet = nn.Sequential(
             nn.Linear(128 + 10*6 + 3 + 4*6 + 3 + 3, rgbnet_width), nn.ReLU(inplace=True),
