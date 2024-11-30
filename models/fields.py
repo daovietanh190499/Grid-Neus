@@ -77,8 +77,8 @@ class SDFNetwork(nn.Module):
     def create_coordinate_grid(self, N):
         coords = torch.linspace(-1, 1, N)
         x, y, z = torch.meshgrid(coords, coords, coords, indexing='ij')
-        grid = torch.stack([x, y, z], dim=0)
-        return grid
+        grid_coord = torch.stack([x, y, z], dim=0).detach()
+        return grid_coord
 
     def forward(self, x):
         output = torch.zeros((x.shape[0], self.grid.shape[1]), device=x.device)
@@ -125,7 +125,7 @@ class SDFNetwork(nn.Module):
             retain_graph=True,
             only_inputs=True)[0]
 
-        color = torch.sigmoid(self.rgbnet(torch.cat([feats, emb_x, emb_d, gradients], dim=1)))
+        color = torch.sigmoid(self.rgbnet(torch.cat([feats, emb_x, emb_d, gradients.detach()], dim=1)))
 
         return gradients, sdf, color
 
