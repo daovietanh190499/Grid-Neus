@@ -61,7 +61,7 @@ class SDFNetwork(nn.Module):
             if l == len(dims) - 2:
                 sdfnet_layers.append(lin)
             else:
-                sdfnet_layers.append(nn.Sequential(lin, nn.Softplus(beta=100)))
+                sdfnet_layers.append(nn.Sequential(lin, nn.ReLU(inplace=True)))
         
         self.sdfnet = nn.Sequential(*sdfnet_layers)
 
@@ -95,7 +95,7 @@ class SDFNetwork(nn.Module):
     def sdf(self, x):
         emb_x = self.positional_encoding(x, 10)
         feats = self.forward(x)
-        output = self.sdfnet(torch.cat([nn.Softplus(beta=100)(feats), emb_x], dim = 1))
+        output = self.sdfnet(torch.cat([nn.ReLU()(feats), emb_x], dim = 1))
         sdf = output
         return sdf
 
@@ -113,7 +113,7 @@ class SDFNetwork(nn.Module):
         emb_d = self.positional_encoding(d, 4)
         feats = self.forward(x)
 
-        sdf = self.sdfnet(torch.cat([nn.Softplus(beta=100)(feats), emb_x], dim = 1))
+        sdf = self.sdfnet(torch.cat([nn.ReLU()(feats), emb_x], dim = 1))
 
         y = sdf
         d_output = torch.ones_like(y, requires_grad=False, device=y.device)
