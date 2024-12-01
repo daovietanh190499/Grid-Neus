@@ -9,7 +9,8 @@ class SDFNetwork(nn.Module):
     def __init__(
         self, 
         bound_min, 
-        bound_max, 
+        bound_max,
+        width, 
         resolution, 
         scale=1.5, 
         sdfnet_width=128, 
@@ -22,26 +23,26 @@ class SDFNetwork(nn.Module):
         super(SDFNetwork, self).__init__()
 
         if geometric_init:
-            linear = nn.Linear(3, 128)
+            linear = nn.Linear(3, width)
             nn.init.constant_(linear.bias, 0.0)
-            nn.init.normal_(linear.weight, 0.0, np.sqrt(2) / np.sqrt(128))
+            nn.init.normal_(linear.weight, 0.0, np.sqrt(2) / np.sqrt(width))
             linear.requires_grad_(False)
             for param in linear.parameters():
                 param.requires_grad = False
 
             grid = self.create_coordinate_grid(resolution)
             grid = linear(grid.permute(1, 2, 3, 0).reshape((resolution**3, 3)))
-            grid = grid.reshape((resolution, resolution, resolution, 128)).permute(3, 0, 1, 2)
+            grid = grid.reshape((resolution, resolution, resolution, width)).permute(3, 0, 1, 2)
             self.register_buffer("grid", grid.unsqueeze(0))  # Store as a non-trainable buffer
         else:
-            self.register_buffer("grid", torch.ones((1, 128, resolution, resolution, resolution)) * 0.3)
+            self.register_buffer("grid", torch.ones((1, width, resolution, resolution, resolution)) * 0.3)
 
         self.voxel_grid = nn.Parameter(self.grid.clone())
         self.scale = scale
         self.resolution = resolution
 
         sdfnet_layers = []
-        dims = [128 + 10*6 + 3, 128] + [sdfnet_width for _ in range(sdfnet_depth-2)] + [1]
+        dims = [width + 10*6 + 3, 128] + [sdfnet_width for _ in range(sdfnet_depth-2)] + [1]
 
         for l in range(len(dims) - 1):
             lin = nn.Linear(dims[l], dims[l+1])
@@ -66,7 +67,7 @@ class SDFNetwork(nn.Module):
         self.sdfnet = nn.Sequential(*sdfnet_layers)
 
         self.rgbnet = nn.Sequential(
-            nn.Linear(128 + 10*6 + 3 + 4*6 + 3 + 3, rgbnet_width), nn.ReLU(inplace=True),
+            nn.Linear(width + 10*6 + 3 + 4*6 + 3 + 3, rgbnet_width), nn.ReLU(inplace=True),
             *[
                 nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.ReLU(inplace=True))
                 for _ in range(rgbnet_depth-2)
