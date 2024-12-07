@@ -238,6 +238,8 @@ class Runner:
         if idx < 0:
             idx = np.random.randint(self.dataset.n_images)
 
+        idx = self.dataset.n_images - 20
+
         print('Validate: iter: {}, camera: {}'.format(self.iter_step, idx))
 
         if resolution_level < 0:

@@ -109,24 +109,30 @@ class SDFNetwork(nn.Module):
         return torch.cat(out, dim=1)
 
     def gradient_sdf_color(self, x, d):
-        x.requires_grad_(True)
+        x_grad = x.clone()
+        x_grad.requires_grad_(True)
+
         emb_x = self.positional_encoding(x, 10)
+        emb_x_grad = self.positional_encoding(x_grad, 10)
         emb_d = self.positional_encoding(d, 4)
+
         feats = self.forward(x)
+        feats_grad = self.forward(x_grad)
 
         sdf = self.sdfnet(torch.cat([nn.ReLU()(feats), emb_x], dim = 1))
+        sdf_grad = self.sdfnet(torch.cat([nn.ReLU()(feats_grad), emb_x_grad], dim = 1))
 
-        y = sdf
+        y = sdf_grad
         d_output = torch.ones_like(y, requires_grad=False, device=y.device)
         gradients = torch.autograd.grad(
             outputs=y,
-            inputs=x,
+            inputs=x_grad,
             grad_outputs=d_output,
             create_graph=True,
             retain_graph=True,
             only_inputs=True)[0]
 
-        color = torch.sigmoid(self.rgbnet(torch.cat([feats, emb_x, emb_d, gradients.detach()], dim=1)))
+        color = torch.sigmoid(self.rgbnet(torch.cat([feats, emb_x, emb_d, gradients.clone().detach()], dim=1)))
 
         return gradients, sdf, color
 
